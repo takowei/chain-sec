@@ -186,3 +186,174 @@ class TestCliProjectFlag:
 
         code = scan.main([str(FIXTURE_MAIN), "--project", "--output", str(tmp_path / "findings")])
         assert code == 2
+
+
+# ---------------------------------------------------------------------------
+# Constraint-parsing unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestConstraintParsing:
+    """Unit tests for semver constraint parsing helpers in project_compiler."""
+
+    def test_parse_caret(self):
+        from src.scanners.project_compiler import _parse_pragma_constraints
+
+        assert _parse_pragma_constraints("^0.8.20") == [("^", "0.8.20")]
+
+    def test_parse_gte_lt_range(self):
+        from src.scanners.project_compiler import _parse_pragma_constraints
+
+        result = _parse_pragma_constraints(">=0.8.0 <0.9.0")
+        assert result == [(">=", "0.8.0"), ("<", "0.9.0")]
+
+    def test_parse_bare_version(self):
+        from src.scanners.project_compiler import _parse_pragma_constraints
+
+        assert _parse_pragma_constraints("0.8.20") == [("", "0.8.20")]
+
+    def test_parse_exact(self):
+        from src.scanners.project_compiler import _parse_pragma_constraints
+
+        assert _parse_pragma_constraints("=0.8.17") == [("=", "0.8.17")]
+
+    def test_caret_upper_nonzero_major(self):
+        from src.scanners.project_compiler import _version_satisfies
+
+        # ^1.2.3 → >=1.2.3 <2.0.0
+        assert _version_satisfies("1.9.9", "^", "1.2.3") is True
+        assert _version_satisfies("2.0.0", "^", "1.2.3") is False
+
+    def test_caret_upper_zero_major(self):
+        from src.scanners.project_compiler import _version_satisfies
+
+        # ^0.8.20 → >=0.8.20 <0.9.0 (npm/Solidity semantics)
+        assert _version_satisfies("0.8.20", "^", "0.8.20") is True
+        assert _version_satisfies("0.8.30", "^", "0.8.20") is True
+        assert _version_satisfies("0.9.0", "^", "0.8.20") is False
+        assert _version_satisfies("0.8.19", "^", "0.8.20") is False
+
+    def test_caret_upper_zero_minor(self):
+        from src.scanners.project_compiler import _version_satisfies
+
+        # ^0.0.5 → >=0.0.5 <0.0.6
+        assert _version_satisfies("0.0.5", "^", "0.0.5") is True
+        assert _version_satisfies("0.0.6", "^", "0.0.5") is False
+
+    def test_gte_operator(self):
+        from src.scanners.project_compiler import _version_satisfies
+
+        assert _version_satisfies("0.8.23", ">=", "0.8.0") is True
+        assert _version_satisfies("0.7.9", ">=", "0.8.0") is False
+
+    def test_lt_operator(self):
+        from src.scanners.project_compiler import _version_satisfies
+
+        assert _version_satisfies("0.8.29", "<", "0.9.0") is True
+        assert _version_satisfies("0.9.0", "<", "0.9.0") is False
+
+
+# ---------------------------------------------------------------------------
+# Version selection unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestVersionSelection:
+    """Unit tests for _pick_best_version and _constraints_lower_bound."""
+
+    def test_pick_highest_satisfying(self):
+        from src.scanners.project_compiler import _pick_best_version
+
+        constraints = [("^", "0.8.0")]
+        # 0.8.30 > 0.8.20, both satisfy ^0.8.0; highest wins
+        result = _pick_best_version(constraints, ["0.8.30", "0.8.20"])
+        assert result == "0.8.30"
+
+    def test_pick_none_when_all_fail(self):
+        from src.scanners.project_compiler import _pick_best_version
+
+        constraints = [("^", "0.8.0")]
+        assert _pick_best_version(constraints, ["0.9.0", "0.7.6"]) == ""
+
+    def test_pick_satisfies_combined_constraints(self):
+        from src.scanners.project_compiler import _pick_best_version
+
+        # >=0.8.17 <0.9.0 — 0.8.20 satisfies, 0.8.16 does not
+        constraints = [(">=", "0.8.17"), ("<", "0.9.0")]
+        assert _pick_best_version(constraints, ["0.8.20", "0.8.16"]) == "0.8.20"
+        assert _pick_best_version(constraints, ["0.8.16"]) == ""
+
+    def test_lower_bound_from_caret(self):
+        from src.scanners.project_compiler import _constraints_lower_bound
+
+        assert _constraints_lower_bound([("^", "0.8.23")]) == "0.8.23"
+
+    def test_lower_bound_from_gte(self):
+        from src.scanners.project_compiler import _constraints_lower_bound
+
+        assert _constraints_lower_bound([(">=", "0.8.17")]) == "0.8.17"
+
+    def test_lower_bound_tightest_wins(self):
+        from src.scanners.project_compiler import _constraints_lower_bound
+
+        # Mix of ^0.8.0 and >=0.8.17; tightest lower bound is 0.8.17
+        result = _constraints_lower_bound([("^", "0.8.0"), (">=", "0.8.17")])
+        assert result == "0.8.17"
+
+
+# ---------------------------------------------------------------------------
+# Artifacts discovery unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestArtifactsDiscovery:
+    """Unit tests for _discover_solc_bin_map in scan.py."""
+
+    def test_discovers_venv_artifacts(self, tmp_path):
+        """Binaries under $VIRTUAL_ENV/.solc-select/artifacts/ are found."""
+        import os
+        import stat
+        from unittest.mock import patch
+
+        import scan
+
+        # Create a fake solc binary tree
+        art_dir = tmp_path / ".solc-select" / "artifacts" / "solc-0.8.99" / "solc-0.8.99"
+        art_dir.parent.mkdir(parents=True)
+        art_dir.write_text("#!/bin/sh\necho 'solc, the solidity compiler version 0.8.99'\n")
+        art_dir.chmod(art_dir.stat().st_mode | stat.S_IEXEC)
+
+        with patch.dict(os.environ, {"VIRTUAL_ENV": str(tmp_path)}):
+            bin_map = scan._discover_solc_bin_map()
+
+        assert "0.8.99" in bin_map, f"Expected 0.8.99 in {bin_map}"
+        assert bin_map["0.8.99"] == str(art_dir)
+
+    def test_non_executable_ignored(self, tmp_path):
+        """Non-executable files inside artifact dirs are not included."""
+        import os
+        from unittest.mock import patch
+
+        import scan
+
+        art_dir = tmp_path / ".solc-select" / "artifacts" / "solc-0.8.99" / "solc-0.8.99"
+        art_dir.parent.mkdir(parents=True)
+        art_dir.write_text("not a real binary")
+        # Do NOT set executable bit
+
+        with patch.dict(os.environ, {"VIRTUAL_ENV": str(tmp_path)}):
+            bin_map = scan._discover_solc_bin_map()
+
+        assert "0.8.99" not in bin_map
+
+    def test_real_venv_artifacts_found(self):
+        """The actual installed solc-0.8.20 and solc-0.8.30 are discovered."""
+        import scan
+
+        bin_map = scan._discover_solc_bin_map()
+        assert bin_map, "Expected at least one solc binary discovered from venv artifacts"
+        # Both installed versions should be present
+        for expected_ver in ("0.8.20", "0.8.30"):
+            assert expected_ver in bin_map, (
+                f"Expected solc {expected_ver} in discovered map {bin_map}"
+            )

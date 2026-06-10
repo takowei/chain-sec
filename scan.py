@@ -122,6 +122,43 @@ def _has_critical_or_high(findings: list) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _discover_solc_bin_map() -> dict[str, str]:
+    """Find all solc binaries installed via solc-select.
+
+    Search order:
+    1. ``$VIRTUAL_ENV/.solc-select/artifacts/`` (set by scripts/setup-env.sh)
+    2. ``~/.solc-select/artifacts/`` (default solc-select location)
+
+    Returns a mapping of ``{version: absolute_path}`` for every binary found.
+    """
+    from src.scanners.slither_wrapper import _solc_version_string
+
+    candidates: list[Path] = []
+    venv = os.environ.get("VIRTUAL_ENV", "")
+    if venv:
+        candidates.append(Path(venv) / ".solc-select" / "artifacts")
+    candidates.append(Path.home() / ".solc-select" / "artifacts")
+
+    bin_map: dict[str, str] = {}
+    for artifacts_dir in candidates:
+        if not artifacts_dir.is_dir():
+            continue
+        for entry in sorted(artifacts_dir.iterdir()):
+            if not entry.is_dir() or not entry.name.startswith("solc-"):
+                continue
+            ver_dir = entry.name[len("solc-") :]
+            binary = entry / f"solc-{ver_dir}"
+            if binary.is_file() and os.access(binary, os.X_OK):
+                # Verify the binary reports the expected version.
+                reported = _solc_version_string(str(binary))
+                key = reported if reported else ver_dir
+                if key not in bin_map:
+                    bin_map[key] = str(binary)
+                    logger.debug("Discovered solc %s at %s", key, binary)
+
+    return bin_map
+
+
 def _run_project_mode(
     target_path: Path,
     output_dir: Path,
@@ -130,16 +167,21 @@ def _run_project_mode(
     """Run project-mode scan; return exit code (0/1/3)."""
     print(f"[scan] Project mode: {target_path}")
 
-    # Build solc_bin_map from the scanner's configured solc binary.
-    solc_bin_map: dict[str, str] | None = None
+    # Build solc_bin_map by auto-discovering all installed solc-select artifacts,
+    # then merging with the scanner's explicitly configured binary (if any).
+    solc_bin_map: dict[str, str] = _discover_solc_bin_map()
+
     if scanner.solc_path:
         from src.scanners.slither_wrapper import _solc_version_string
 
         ver = _solc_version_string(scanner.solc_path)
-        if ver:
-            solc_bin_map = {ver: scanner.solc_path}
+        if ver and ver not in solc_bin_map:
+            solc_bin_map[ver] = scanner.solc_path
 
-    result: ScanProjectResult = scanner.scan_project(target_path, solc_bin_map=solc_bin_map)
+    result: ScanProjectResult = scanner.scan_project(
+        target_path,
+        solc_bin_map=solc_bin_map if solc_bin_map else None,
+    )
 
     # Report compile failures.
     if result.failed_files:
