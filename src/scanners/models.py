@@ -35,9 +35,11 @@ class Finding:
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
+        # severity may be a Severity enum or a plain str (from subprocess JSON).
+        sev = self.severity.value if isinstance(self.severity, Severity) else self.severity
         return {
             "rule_id": self.rule_id,
-            "severity": self.severity.value,
+            "severity": sev,
             "contract": self.contract,
             "function": self.function,
             "description": self.description,

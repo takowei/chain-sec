@@ -12,10 +12,19 @@ import pytest
 # ---------------------------------------------------------------------------
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
-SOLC_BIN = os.environ.get(
-    "CHAIN_SEC_SOLC",
-    "/tmp/claude/venv/.solc-select/artifacts/solc-0.8.20/solc-0.8.20",
-)
+_HOME = os.path.expanduser("~")
+_PROJECT_ROOT = Path(__file__).parent.parent
+
+# Candidate solc paths in priority order:
+#   1. CHAIN_SEC_SOLC env var (set by scripts/env-vars.sh or CI)
+#   2. ~/.solc-select (default solc-select location when home is writable)
+#   3. .venv/.solc-select (fallback installed by setup-env.sh)
+_SOLC_CANDIDATES = [
+    os.environ.get("CHAIN_SEC_SOLC", ""),
+    f"{_HOME}/.solc-select/artifacts/solc-0.8.20/solc-0.8.20",
+    str(_PROJECT_ROOT / ".venv" / ".solc-select" / "artifacts" / "solc-0.8.20" / "solc-0.8.20"),
+]
+SOLC_BIN = next((p for p in _SOLC_CANDIDATES if p and os.path.isfile(p)), "")
 
 
 @pytest.fixture(scope="session")
