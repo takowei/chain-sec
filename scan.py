@@ -3,12 +3,14 @@
 Usage
 -----
     python scan.py <solidity_file_or_directory> [options]
+    python scan.py <project_directory> --project [options]
 
 Examples
 --------
     python scan.py contracts/Token.sol
     python scan.py path/to/cloned/repo/
     python scan.py tests/fixtures/UnguardedMint.sol --output findings/
+    python scan.py tests/fixtures/multi_file_project/ --project --output findings/
 
 The CLI:
   1. Discovers .sol files under the given path.
@@ -17,10 +19,17 @@ The CLI:
   4. Prints a severity summary to stdout.
   5. Exits 0 when no critical/high findings, 1 otherwise.
 
+Project mode (--project):
+  Handles multi-file projects with imports and node_modules.  Automatically
+  generates remappings, selects the correct solc version from pragma, and
+  drives solc directly — no hardhat / foundry / npm scripts are executed.
+  (RULES-OF-ENGAGEMENT.md §8 compliance.)
+
 Red-line constraints (RULES-OF-ENGAGEMENT.md):
   - No network requests are made.
   - No mainnet/RPC interaction.
   - Analysis is read-only on local source files only.
+  - Target build scripts are never executed.
 """
 
 from __future__ import annotations
@@ -36,7 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.scanners.models import Severity
-from src.scanners.slither_wrapper import SlitherScanner
+from src.scanners.slither_wrapper import ScanProjectResult, SlitherScanner
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -108,6 +117,64 @@ def _has_critical_or_high(findings: list) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Project mode
+# ---------------------------------------------------------------------------
+
+
+def _run_project_mode(
+    target_path: Path,
+    output_dir: Path,
+    scanner: SlitherScanner,
+) -> int:
+    """Run project-mode scan; return exit code (0/1/3)."""
+    print(f"[scan] Project mode: {target_path}")
+
+    # Build solc_bin_map from the scanner's configured solc binary.
+    solc_bin_map: dict[str, str] | None = None
+    if scanner.solc_path:
+        from src.scanners.slither_wrapper import _solc_version_string
+
+        ver = _solc_version_string(scanner.solc_path)
+        if ver:
+            solc_bin_map = {ver: scanner.solc_path}
+
+    result: ScanProjectResult = scanner.scan_project(target_path, solc_bin_map=solc_bin_map)
+
+    # Report compile failures.
+    if result.failed_files:
+        print(
+            f"[scan] {len(result.failed_files)} file(s) failed to compile (skipped from findings):"
+        )
+        for fpath, reason in result.failed_files.items():
+            print(f"  SKIP  {fpath.name}: {reason[:100]}")
+
+    # Write combined findings JSON.
+    project_name = target_path.name or "project"
+    out_path = _write_findings(result.findings, output_dir, project_name)
+
+    counts = _severity_counts(result.findings)
+    total = sum(counts.values())
+    parts = "  ".join(
+        f"{sev}: {counts[sev]}"
+        for sev in [s.value for s in _SEVERITY_ORDER]
+        if counts.get(sev, 0) > 0
+    )
+    print(f"[scan] Project findings: {total}  {parts or 'none'}")
+    print(f"[scan] Compiled: {len(result.compiled_files)} file(s)")
+    if result.remappings_used:
+        print(f"[scan] Remappings: {len(result.remappings_used)} active")
+    print(f"[scan] solc version: {result.solc_version or '(unknown)'}")
+    print(f"[scan] Output: {out_path}")
+
+    return 1 if _has_critical_or_high(result.findings) else 0
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="scan.py",
@@ -122,6 +189,16 @@ def main(argv: list[str] | None = None) -> int:
         "-o",
         default="findings",
         help="Directory where findings JSON files are written (default: findings/).",
+    )
+    parser.add_argument(
+        "--project",
+        "-p",
+        action="store_true",
+        help=(
+            "Enable project mode: auto-detect remappings from node_modules/, "
+            "select solc version from pragma, compile with explicit solc — "
+            "never calls hardhat/foundry/npm scripts."
+        ),
     )
     parser.add_argument(
         "--verbose",
@@ -139,11 +216,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[scan] Error: path does not exist: {target_path}", file=sys.stderr)
         return 2
 
-    sol_files = _discover_sol_files(target_path)
-    if not sol_files:
-        print(f"[scan] No .sol files found under {target_path}", file=sys.stderr)
-        return 2
-
     output_dir = Path(args.output).resolve()
     scanner = _build_scanner()
 
@@ -154,6 +226,22 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 3
+
+    # --project: delegate entirely to project mode.
+    if args.project:
+        if not target_path.is_dir():
+            print(
+                f"[scan] Error: --project requires a directory, got: {target_path}",
+                file=sys.stderr,
+            )
+            return 2
+        return _run_project_mode(target_path, output_dir, scanner)
+
+    # Standard file/directory mode.
+    sol_files = _discover_sol_files(target_path)
+    if not sol_files:
+        print(f"[scan] No .sol files found under {target_path}", file=sys.stderr)
+        return 2
 
     found_critical_or_high = False
     total_findings = 0

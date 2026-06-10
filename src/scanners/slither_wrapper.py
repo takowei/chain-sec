@@ -8,14 +8,16 @@ import os
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .mint_patterns import SLITHER_BUILTIN_DETECTORS
 from .models import Finding, Severity
+from .project_compiler import build_project_context
 
 if TYPE_CHECKING:
-    pass
+    from .project_compiler import ProjectContext
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,31 @@ _SLITHER_SEVERITY_MAP: dict[str, Severity] = {
     "Informational": Severity.INFO,
     "Optimization": Severity.INFO,
 }
+
+
+@dataclass
+class ScanProjectResult:
+    """Aggregated result from a project-mode scan.
+
+    Attributes
+    ----------
+    findings:
+        All findings across all successfully compiled files.
+    compiled_files:
+        Files that were compiled and scanned without error.
+    failed_files:
+        Files that failed to compile; mapped to a short error description.
+    remappings_used:
+        The remapping strings that were passed to solc / slither.
+    solc_version:
+        The solc version that was selected for this project.
+    """
+
+    findings: list[Finding] = field(default_factory=list)
+    compiled_files: list[Path] = field(default_factory=list)
+    failed_files: dict[Path, str] = field(default_factory=dict)
+    remappings_used: list[str] = field(default_factory=list)
+    solc_version: str = ""
 
 
 def _find_slither_bin() -> str | None:
@@ -151,6 +178,81 @@ class SlitherScanner:
         findings.extend(self._run_custom_mint_rules(source_path))
         return findings
 
+    def scan_project(
+        self,
+        project_root: str | Path,
+        solc_bin_map: dict[str, str] | None = None,
+    ) -> ScanProjectResult:
+        """Scan a multi-file Solidity project using explicit solc invocation.
+
+        This method never calls hardhat / foundry / npm scripts.  It:
+          1. Calls ``build_project_context`` to resolve remappings and select
+             the correct solc version from pragma statements.
+          2. Iterates over each discovered .sol file, passing remaps and the
+             explicit solc binary to slither via ``solc_remaps`` / ``solc``
+             kwargs.  No framework auto-detection is triggered.
+          3. Falls back gracefully per-file: compilation failures are recorded
+             in ``ScanProjectResult.failed_files`` rather than aborting the run.
+
+        Parameters
+        ----------
+        project_root:
+            Root directory of the target project.
+        solc_bin_map:
+            Optional mapping ``{version: absolute_solc_path}``.  If omitted,
+            the scanner's own ``solc_path`` is used for all files (appropriate
+            when you already know the correct version).
+
+        Returns
+        -------
+        ScanProjectResult
+        """
+        project_root = Path(project_root).resolve()
+
+        # Build the map from our own solc_path if none supplied.
+        if solc_bin_map is None:
+            if not self.solc_path:
+                solc_bin_map = {}
+            else:
+                # Detect version from the binary itself so we can key the map.
+                ver = _solc_version_string(self.solc_path)
+                solc_bin_map = {ver: self.solc_path} if ver else {}
+
+        try:
+            ctx: ProjectContext = build_project_context(project_root, solc_bin_map)
+        except ValueError as exc:
+            # Version not available — surface as a single INFO finding.
+            return ScanProjectResult(
+                findings=[
+                    Finding(
+                        rule_id="PROJECT-SOLC-VERSION",
+                        severity=Severity.INFO,
+                        contract="N/A",
+                        function=None,
+                        description=str(exc),
+                        source_file=str(project_root),
+                    )
+                ]
+            )
+
+        result = ScanProjectResult(
+            remappings_used=ctx.remappings,
+            solc_version=ctx.solc_version,
+        )
+
+        for sol_file in ctx.sol_files:
+            file_findings, ok = self._scan_project_file(sol_file, ctx)
+            if ok:
+                result.compiled_files.append(sol_file)
+                result.findings.extend(file_findings)
+            else:
+                # file_findings contains the COMPILE-ERROR INFO finding.
+                err_desc = file_findings[0].description if file_findings else "unknown error"
+                result.failed_files[sol_file] = err_desc
+                logger.warning("Project file failed: %s — %s", sol_file.name, err_desc[:120])
+
+        return result
+
     # ------------------------------------------------------------------
     # Built-in detectors via slither CLI / JSON output
     # ------------------------------------------------------------------
@@ -188,6 +290,99 @@ class SlitherScanner:
         except Exception as exc:
             logger.warning("Slither builtin run failed: %s", exc)
         return []
+
+    def _run_builtin_detectors_project(
+        self,
+        source_path: Path,
+        ctx: ProjectContext,
+    ) -> list[Finding]:
+        """Run built-in detectors for a single file inside a project context.
+
+        Passes ``--solc-remaps`` and ``--solc`` explicitly so slither never
+        tries to auto-detect a compilation framework.
+        """
+        detector_args = ",".join(SLITHER_BUILTIN_DETECTORS)
+        cmd = [
+            sys.executable,
+            "-m",
+            "slither",
+            str(source_path),
+            "--json",
+            "-",
+            "--detect",
+            detector_args,
+            "--no-fail-pedantic",
+            "--solc",
+            ctx.solc_bin,
+        ]
+        if ctx.remappings:
+            cmd += ["--solc-remaps", " ".join(ctx.remappings)]
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                env=self._build_env(),
+                cwd=str(ctx.root),
+                timeout=120,
+            )
+            if result.stdout.strip():
+                return self._parse_slither_json(result.stdout, str(source_path))
+            if result.returncode not in (0, 1):
+                logger.debug(
+                    "Slither project exited %d for %s: %s",
+                    result.returncode,
+                    source_path.name,
+                    result.stderr[:300],
+                )
+        except subprocess.TimeoutExpired:
+            logger.warning("Slither timed out on %s", source_path)
+        except Exception as exc:
+            logger.warning("Slither project builtin failed: %s", exc)
+        return []
+
+    def _scan_project_file(
+        self,
+        sol_file: Path,
+        ctx: ProjectContext,
+    ) -> tuple[list[Finding], bool]:
+        """Compile and scan a single file within a project context.
+
+        Returns ``(findings, success)``.  On compile error the findings list
+        contains a single COMPILE-ERROR INFO entry and success is False.
+        """
+        builtin = self._run_builtin_detectors_project(sol_file, ctx)
+        custom_script = _build_custom_rule_script(
+            str(sol_file),
+            ctx.solc_bin,
+            remappings=ctx.remappings,
+            working_dir=str(ctx.root),
+        )
+        custom: list[Finding] = []
+        try:
+            res = subprocess.run(
+                [sys.executable, "-c", custom_script],
+                capture_output=True,
+                text=True,
+                env=self._build_env(),
+                cwd=str(ctx.root),
+                timeout=120,
+            )
+            if res.stdout.strip():
+                raw = json.loads(res.stdout)
+                for item in raw:
+                    if item.get("rule_id") == "COMPILE-ERROR":
+                        return [Finding(**item)], False
+                custom = [Finding(**item) for item in raw]
+            elif res.returncode != 0:
+                logger.debug("Custom script stderr for %s: %s", sol_file.name, res.stderr[:300])
+        except subprocess.TimeoutExpired:
+            logger.warning("Custom rule script timed out on %s", sol_file)
+        except Exception as exc:
+            logger.warning("Custom rule script failed: %s", exc)
+
+        return builtin + custom, True
 
     def _parse_slither_json(self, raw_json: str, source_file: str) -> list[Finding]:
         findings: list[Finding] = []
@@ -262,10 +457,37 @@ class SlitherScanner:
         return []
 
 
-def _build_custom_rule_script(source_path: str, solc_path: str | None) -> str:
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _solc_version_string(solc_bin: str) -> str:
+    """Return the version string reported by a solc binary (e.g. '0.8.20')."""
+    try:
+        out = subprocess.check_output(
+            [solc_bin, "--version"], text=True, timeout=10, stderr=subprocess.DEVNULL
+        )
+        import re
+
+        m = re.search(r"(\d+\.\d+\.\d+)", out)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+def _build_custom_rule_script(
+    source_path: str,
+    solc_path: str | None,
+    *,
+    remappings: list[str] | None = None,
+    working_dir: str | None = None,
+) -> str:
     """Return a self-contained Python script that runs custom mint rules and prints JSON."""
     mint_names = list(_MINT_FUNCTION_NAMES)
     solc_arg = f'"{solc_path}"' if solc_path else "None"
+    remaps_arg = repr(remappings or [])
+    working_dir_arg = f'"{working_dir}"' if working_dir else "None"
     return f"""
 import json, sys
 
@@ -288,7 +510,16 @@ MINT_NAMES = set({mint_names!r})
 findings = []
 
 solc_path = {solc_arg}
-kwargs = {{"solc": solc_path}} if solc_path else {{}}
+remappings = {remaps_arg}
+working_dir = {working_dir_arg}
+
+kwargs = {{}}
+if solc_path:
+    kwargs["solc"] = solc_path
+if remappings:
+    kwargs["solc_remaps"] = remappings
+if working_dir:
+    kwargs["solc_working_dir"] = working_dir
 
 try:
     sl = Slither({source_path!r}, **kwargs)
