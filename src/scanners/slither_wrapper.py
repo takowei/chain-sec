@@ -535,12 +535,29 @@ except Exception as e:
     sys.exit(0)
 
 for contract in sl.contracts:
+    # MINT-001 filter: skip interfaces and abstract contracts — no executable body.
+    _contract_is_interface_or_abstract = contract.is_interface or contract.is_abstract
+
     for func in contract.functions_and_modifiers:
         func_name = func.name
         # MINT-001: mint function with no access control
         if func_name in MINT_NAMES or any(
             n in func_name.lower() for n in ["mint", "issue"]
         ):
+            # Skip interface/abstract contracts — declarations have no body.
+            if _contract_is_interface_or_abstract:
+                continue
+            # Skip functions that are not implemented (abstract method declarations).
+            # func.is_implemented is None for unimplemented declarations.
+            if func.is_implemented is not True:
+                continue
+            # Skip view/pure functions — they cannot mutate state, so no real mint.
+            if func.view or func.pure:
+                continue
+            # Skip internal/private functions — not directly callable from outside.
+            # Access control on the internal layer is enforced by the public caller.
+            if func.visibility not in ("public", "external"):
+                continue
             has_modifier = bool(func.modifiers)
             has_require_owner = any(
                 "owner" in str(n).lower() or "role" in str(n).lower() or "only" in str(n).lower()

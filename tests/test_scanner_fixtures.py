@@ -56,3 +56,39 @@ class TestMintRuleDetection:
         assert "MINT-001" not in rule_ids, (
             f"MINT-001 should not fire on owner-gated mint, but got {rule_ids}"
         )
+
+    def test_interface_mint_no_mint001(self, slither_scanner):
+        """Interface declaration has no body — MINT-001 must NOT fire."""
+        findings = slither_scanner._run_custom_mint_rules(FIXTURES_DIR / "InterfaceMint.sol")
+        mint001 = [f for f in findings if f.rule_id == "MINT-001"]
+        assert mint001 == [], (
+            f"MINT-001 must not fire on interface declarations, but fired on: "
+            f"{[(f.contract, f.function) for f in mint001]}"
+        )
+
+    def test_view_pure_mint_no_mint001(self, slither_scanner):
+        """view/pure functions cannot mutate state — MINT-001 must NOT fire."""
+        findings = slither_scanner._run_custom_mint_rules(FIXTURES_DIR / "ViewMint.sol")
+        mint001 = [f for f in findings if f.rule_id == "MINT-001"]
+        assert mint001 == [], (
+            f"MINT-001 must not fire on view/pure functions, but fired on: "
+            f"{[(f.contract, f.function) for f in mint001]}"
+        )
+
+    def test_abstract_mint_no_mint001(self, slither_scanner):
+        """Abstract (unimplemented) function declaration — MINT-001 must NOT fire."""
+        findings = slither_scanner._run_custom_mint_rules(FIXTURES_DIR / "AbstractMint.sol")
+        mint001 = [f for f in findings if f.rule_id == "MINT-001"]
+        assert mint001 == [], (
+            f"MINT-001 must not fire on abstract declarations, but fired on: "
+            f"{[(f.contract, f.function) for f in mint001]}"
+        )
+
+    def test_internal_mint_no_mint001(self, slither_scanner):
+        """Internal/private mint helpers — MINT-001 must NOT fire (not externally callable)."""
+        findings = slither_scanner._run_custom_mint_rules(FIXTURES_DIR / "InternalMint.sol")
+        mint001 = [f for f in findings if f.rule_id == "MINT-001"]
+        assert mint001 == [], (
+            f"MINT-001 must not fire on internal/private mint functions, but fired on: "
+            f"{[(f.contract, f.function) for f in mint001]}"
+        )
