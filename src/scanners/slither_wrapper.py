@@ -628,5 +628,27 @@ for contract in sl.contracts:
                     "extra": {{}},
                 }})
 
+
+# INV-* invariant checks — imported from src.scanners.invariant_checks.
+# PYTHONPATH includes the project root so this import resolves in subprocess.
+try:
+    from src.scanners.invariant_checks import run_invariant_checks
+    inv_findings = run_invariant_checks(sl)
+    for f in inv_findings:
+        findings.append(f.to_dict())
+except Exception as _inv_exc:
+    import traceback
+    findings.append({{
+        "rule_id": "INV-IMPORT-ERROR",
+        "severity": "INFO",
+        "contract": "N/A",
+        "function": None,
+        "description": "invariant_checks import/run failed: " + traceback.format_exc(limit=3),
+        "source_file": {source_path!r},
+        "line_start": None,
+        "line_end": None,
+        "extra": {{}},
+    }})
+
 print(json.dumps(findings))
 """

@@ -1,0 +1,13 @@
+[
+  {
+    "rule_id": "MINT-001",
+    "severity": "CRITICAL",
+    "contract": "UnguardedMint",
+    "function": "mint",
+    "description": "Function 'mint' calls mint() without any access control check. Any address can inflate token supply.",
+    "source_file": "/home/tako/workspace/chain-sec/tests/fixtures/UnguardedMint.sol",
+    "line_start": 11,
+    "line_end": 14,
+    "extra": {}
+  }
+]

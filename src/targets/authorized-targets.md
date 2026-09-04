@@ -14,6 +14,21 @@
 
 ---
 
+## 🎯 進行中競賽（實際入場 — 最高優先）
+
+### dreUSD（DRE App）— Sherlock 競賽【校準場，2026-06-11 入場】
+
+- **平台 / scope URL**：Sherlock 競賽 — https://audits.sherlock.xyz/contests/1259
+- **授權日 / 授權性質**：2026-06-11。**競賽 = 公開授權靜態審查**（平台機制即邀請審計），落在紅線1 in-scope。
+- **獎池**：**$60,000 USDC**。Sherlock 計分：High=10 pts、Medium=3 pts，duplicate 按比例縮減；Low/Info 另有保留池（確切分配待從頁面確認）。
+- **scope（引自公開頁）**：dreUSD ERC-20 穩定幣（1:1 贖回 USDC，由現金等價物+不動產信貸+短期擔保貸款背書）、**dreUSDs ERC-4626 vault**、on-chain **mint / redemption / rewards distribution 邏輯**、LayerZero **OFT adapters**。
+- **原始碼**：⚠️ **待確認**——Sherlock 慣例為 `github.com/sherlock-audit/<YYYY-MM-name>`，未經頁面確認不臆造。**需 Root clone（`--ignore-scripts`）或解 WebFetch 才能取得正確 repo 與 scope 釘選 commit。**
+- **截止日**：⚠️ **待確認**——開工前必須確認競賽仍開放且剩餘天數足夠（深審需數日）。
+- **鑄幣/會計重點（我們的 edge 面）**：①穩定幣 mint/redeem 1:1 會計與 peg 維持；②**ERC-4626 share↔asset 取整方向**（INV-002 本行，vault 類最常見真漏洞）；③rewards distribution 的供應量一致性；④**OFT 跨鏈鑄造**——LayerZero OFT 的 mint/burn 在來源鏈與目標鏈的供應量守恆是高風險面（跨鏈訊息重放/不對稱鑄造）。
+- **out-of-scope**：待從 scope 頁確認（Sherlock 通例：禁主網測試、DoS、社工、known issues 不計）。**提交前以頁面釘選 commit 為準，非 HEAD。**
+
+---
+
 ## 排序清單（按「鑄幣漏洞可能性 × 賞金 × 原始碼可取得性」）
 
 ### 1. Pendle Finance（Cantina）⭐ 最優先

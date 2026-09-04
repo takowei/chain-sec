@@ -7,3 +7,11 @@ dist/
 *.egg-info/
 .mcp.json
 .claude/
+
+# Scan output against real upstream protocols stays local.
+# These are unverified Slither/INV static-analysis hits on live third-party
+# code; this repo is public, so publishing them is uncoordinated disclosure
+# and hands the findings to anyone racing the same bounty.
+# findings/pendle/ is grandfathered in (already public since 2026-06) but
+# gets no further updates from here.
+findings/*/
