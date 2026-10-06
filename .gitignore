@@ -15,3 +15,7 @@ dist/
 # findings/pendle/ is grandfathered in (already public since 2026-06) but
 # gets no further updates from here.
 findings/*/
+
+# local AI-assistant notes and settings
+CLAUDE.md
+.claude/
