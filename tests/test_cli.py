@@ -142,3 +142,29 @@ class TestCliEndToEnd:
         data = json.loads(out_file.read_text())
         rule_ids = [f["rule_id"] for f in data]
         assert "MINT-004" in rule_ids, f"MINT-004 missing from {rule_ids}"
+
+
+class TestCompileFailureIsNotClean:
+    def test_compile_error_exits_4(self, tmp_path, monkeypatch):
+        """A file that fails to compile must not exit 0 (clean)."""
+        import scan
+        from src.scanners.models import Finding, Severity
+
+        class FailingScanner:
+            available = True
+
+            def scan(self, path):
+                return [
+                    Finding(
+                        rule_id="COMPILE-ERROR",
+                        severity=Severity.INFO,
+                        contract="",
+                        function=None,
+                        description="solc not found",
+                        source_file=str(path),
+                    )
+                ]
+
+        monkeypatch.setattr(scan, "_build_scanner", FailingScanner)
+        code = run_scan([str(FIXTURES_DIR / "UnguardedMint.sol"), "--output", str(tmp_path / "f")])
+        assert code == 4

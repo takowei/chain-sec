@@ -18,9 +18,11 @@ Python、[Slither](https://github.com/crytic/slither)、solc（透過 solc-selec
 
 ```bash
 source scripts/env-vars.sh          # 必要：設定 CHAIN_SEC_SOLC 等路徑
-.venv/bin/python -m pytest -q       # → 75 passed（2026-06-24 實測）
+.venv/bin/python -m pytest -q       # → 76 passed（2026-10-06 實測）
 .venv/bin/python scan.py <path> --project
 ```
+
+結束代碼：`0` 無 CRITICAL/HIGH、`1` 有 CRITICAL/HIGH、`2` 輸入路徑錯誤、`3` 找不到 Slither、`4` 有檔案編譯失敗（掃描不完整，不能當成乾淨）。
 
 > ⚠️ 測試需先 `source scripts/env-vars.sh`，否則 CLI/solc 相關測試會因環境未設而假失敗。
 
@@ -29,7 +31,7 @@ source scripts/env-vars.sh          # 必要：設定 CHAIN_SEC_SOLC 等路徑
 ```
 scan.py        CLI：單檔 / project mode 掃描入口
 src/           偵測器規則（MINT-* / INV-*）+ Slither 整合
-tests/         75 測試（偵測器、過濾、CLI、project mode、禁主網守衛）
+tests/         76 測試（偵測器、過濾、CLI、project mode、禁主網守衛）
 docs/          invariant 規格、設計文件
 RULES-OF-ENGAGEMENT.md   授權與責任揭露紀律
 ```
@@ -42,4 +44,4 @@ RULES-OF-ENGAGEMENT.md   授權與責任揭露紀律
 
 ## 狀態
 
-🟢 管線可用、75 測試全綠（需 env）。定位為防禦/學習研究工具；不含任何目標清單或漏洞細節於版控。
+🟢 管線可用、76 測試全綠（需 env）。定位為防禦/學習研究工具；不含任何目標清單或漏洞細節於版控。

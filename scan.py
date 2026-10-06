@@ -17,7 +17,9 @@ The CLI:
   2. Runs SlitherScanner (built-in detectors + custom mint-pattern rules).
   3. Writes one findings JSON per input file to the output directory.
   4. Prints a severity summary to stdout.
-  5. Exits 0 when no critical/high findings, 1 otherwise.
+  5. Exits 1 when any critical/high finding exists, 4 when no critical/high
+     was found but at least one file failed to compile (the scan is
+     incomplete, so it must not read as clean), 0 otherwise.
 
 Project mode (--project):
   Handles multi-file projects with imports and node_modules.  Automatically
@@ -109,6 +111,14 @@ def _print_summary(sol_file: Path, findings: list, out_path: Path) -> None:
     print(f"  -> {out_path}")
 
 
+COMPILE_ERROR_RULE = "COMPILE-ERROR"
+EXIT_INCOMPLETE = 4
+
+
+def _has_compile_error(findings: list) -> bool:
+    return any(f.rule_id == COMPILE_ERROR_RULE for f in findings)
+
+
 def _has_critical_or_high(findings: list) -> bool:
     for f in findings:
         sev = f.severity if isinstance(f.severity, str) else f.severity.value
@@ -164,7 +174,7 @@ def _run_project_mode(
     output_dir: Path,
     scanner: SlitherScanner,
 ) -> int:
-    """Run project-mode scan; return exit code (0/1/3)."""
+    """Run project-mode scan; return exit code (0/1/4)."""
     print(f"[scan] Project mode: {target_path}")
 
     # Build solc_bin_map by auto-discovering all installed solc-select artifacts,
@@ -209,7 +219,11 @@ def _run_project_mode(
     print(f"[scan] solc version: {result.solc_version or '(unknown)'}")
     print(f"[scan] Output: {out_path}")
 
-    return 1 if _has_critical_or_high(result.findings) else 0
+    if _has_critical_or_high(result.findings):
+        return 1
+    if result.failed_files or not result.compiled_files:
+        return EXIT_INCOMPLETE
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +300,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     found_critical_or_high = False
+    compile_failed = False
     total_findings = 0
 
     for sol_file in sol_files:
@@ -295,11 +310,18 @@ def main(argv: list[str] | None = None) -> int:
         total_findings += len(findings)
         if _has_critical_or_high(findings):
             found_critical_or_high = True
+        if _has_compile_error(findings):
+            compile_failed = True
 
     print(f"\n[scan] Scanned {len(sol_files)} file(s), {total_findings} finding(s) total.")
     print(f"[scan] Output dir: {output_dir}")
 
-    return 1 if found_critical_or_high else 0
+    if found_critical_or_high:
+        return 1
+    if compile_failed:
+        print("[scan] Incomplete: at least one file failed to compile.", file=sys.stderr)
+        return EXIT_INCOMPLETE
+    return 0
 
 
 if __name__ == "__main__":
